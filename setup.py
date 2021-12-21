@@ -21,6 +21,7 @@ import platform
 releaseNotes = """
 - add: 12 build point option for model generation
 - add: grouping updater windows upper left corner
+- add: support for languages other than english in automation
 - add: minimize cmd window once MW4 is started
 - fix: KmTronic Relay messages
  """
@@ -30,7 +31,7 @@ with open('notes.txt', 'w') as f:
 
 setup(
     name='mountwizzard4',
-    version='2.1.7b1',
+    version='2.1.7b2',
     packages=[
         'mw4',
         'mw4.base',
