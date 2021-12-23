@@ -44,8 +44,8 @@ class SGProClass(DriverData):
         self.threadPool = threadPool
         self.data = data
 
-        self._host = ('localhost', 11111)
-        self._hostaddress = 'localhost'
+        self._host = ('127.0.0.1', 59590)
+        self._hostaddress = '127.0.0.1'
         self._deviceName = ''
         self.deviceType = ''
 
@@ -220,7 +220,6 @@ class SGProClass(DriverData):
         """
         :return: success of reconnecting to server
         """
-        self.propertyExceptions = []
         for retry in range(0, 10):
             self.setSGProProperty('connected', Connected=True)
             suc = self.getSGProProperty('connected')
@@ -349,7 +348,6 @@ class SGProClass(DriverData):
         self.setSGProProperty('connected', Connected=False)
         self.deviceConnected = False
         self.serverConnected = False
-        self.propertyExceptions = []
         self.signals.deviceDisconnected.emit(f'{self.deviceName}')
         self.signals.serverDisconnected.emit({f'{self.deviceName}': 0})
         self.app.message.emit(f'SGPRO device remove:[{self.deviceName}]', 0)
