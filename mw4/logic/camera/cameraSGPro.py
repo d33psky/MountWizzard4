@@ -16,6 +16,7 @@
 #
 ###########################################################
 # standard libraries
+import os
 
 # external packages
 
@@ -28,6 +29,7 @@ from logic.camera.cameraSupport import CameraSupport
 class CameraSGPro(SGProClass, CameraSupport):
     """
     """
+    DEVICE_TYPE = 'Camera'
 
     __all__ = ['CameraSGPro']
 
@@ -38,13 +40,98 @@ class CameraSGPro(SGProClass, CameraSupport):
         self.abortExpose = False
         self.parent = parent
 
-    def getInitialConfig(self):
+    def sgGetCameraTemp(self):
         """
-        :return: true for test purpose
+        :return:
         """
-        if not self.deviceConnected:
+        prop = f'cameratemp'
+        response = self.requestProperty(prop)
+        if response is None:
+            return False, {}
+
+        return response['Success'], response
+
+    def sgSetCameraTemp(self, temperature):
+        """
+        :param: temperature:
+        :return:
+        """
+        prop = f'setcameratemp/{temperature}'
+        response = self.requestProperty(prop)
+        if response is None:
             return False
-        super().getInitialConfig()
+
+        return response['Success']
+
+    def sgCaptureImage(self, params):
+        """
+        :param: params:
+        :return:
+        """
+        response = self.requestProperty('image', params=params)
+        if response is None:
+            return False, {}
+
+        return response['Success'], response
+
+    def sgAbortImage(self):
+        """
+        :return:
+        """
+        response = self.requestProperty('abortimage')
+        if response is None:
+            return False
+
+        return response['Success']
+
+    def sgGetImagePath(self, receipt):
+        """
+        :param: receipt:
+        :return:
+        """
+        prop = f'imagepath/{receipt}'
+        response = self.requestProperty(prop)
+        if response is None:
+            return False
+
+        return response['Success']
+
+    def sgGetCameraProps(self):
+        """
+        :return:
+        """
+        response = self.requestProperty('cameraprops')
+        if response is None:
+            return False, {}
+
+        return response['Success'], response
+
+    def workerGetInitialConfig(self):
+        """
+        :return:
+        """
+        suc, response = self.sgGetCameraProps()
+        if not suc:
+            return False
+
+        self.storePropertyToData(response['Message'],
+                                 'CCD_INFO.Message')
+        self.storePropertyToData(response.get('IsoValues', []),
+                                 'CCD_INFO.IsoValues')
+        self.storePropertyToData(response.get('GainValues', []),
+                                 'CCD_INFO.GainValues')
+        self.storePropertyToData(response['NumPixelsX'],
+                                 'CCD_INFO.CCD_MAX_X')
+        self.storePropertyToData(response['NumPixelsY'],
+                                 'CCD_INFO.CCD_MAX_Y')
+        canSubframe = response.get('CanSubframe', False)
+        if canSubframe:
+            self.storePropertyToData(response['NumPixelsX'],
+                                     'CCD_FRAME.X')
+            self.storePropertyToData(response['NumPixelsY'],
+                                     'CCD_FRAME.Y')
+        self.storePropertyToData(True, 'CAN_SET_CCD_TEMPERATURE')
+        self.storePropertyToData(1, 'CCD_BINNING.HOR_BIN')
         self.log.debug(f'Initial data: {self.data}')
         return True
 
@@ -52,23 +139,21 @@ class CameraSGPro(SGProClass, CameraSupport):
         """
         :return: true for test purpose
         """
-        if not self.deviceConnected:
+        suc, response = self.sgGetCameraTemp()
+        if not suc:
             return False
 
+        self.storePropertyToData(response.get('Temperature', 10),
+                                 'CCD_TEMPERATURE.CCD_TEMPERATURE_VALUE')
         return True
 
     def sendDownloadMode(self, fastReadout=False):
         """
         :return: success
         """
-        canFast = self.data.get('CAN_FAST', False)
-        if not canFast:
-            return False
-        if fastReadout:
-            self.client.fastreadout(FastReadout=True)
-
-        quality = 'High' if self.data.get('READOUT_QUALITY.QUALITY_HIGH', True) else 'Low'
-        self.log.debug(f'camera has readout quality entry: {quality}')
+        self.storePropertyToData(fastReadout,
+                                 'READOUT_QUALITY.QUALITY_LOW',
+                                 'READOUT_QUALITY.QUALITY_HIGH')
         return True
 
     def workerExpose(self,
@@ -94,22 +179,34 @@ class CameraSGPro(SGProClass, CameraSupport):
         :param focalLength:
         :return:
         """
-        self.sendDownloadMode(fastReadout=fastReadout)
-        self.setSGProProperty('binx', BinX=int(binning))
-        self.setSGProProperty('biny', BinY=int(binning))
-        self.setSGProProperty('startx', StartX=int(posX / binning))
-        self.setSGProProperty('starty', StartY=int(posY / binning))
-        self.setSGProProperty('numx', NumX=int(width / binning))
-        self.setSGProProperty('numy', NumX=int(width / binning))
+        speed = 'High' if fastReadout else 'Normal'
+        params = {'BinningMode': binning,
+                  'ExposureLength': expTime,
+                  'UseSubframe': True,
+                  'X': int(posX / binning),
+                  'Y': int(posY / binning),
+                  'Width': int(width / binning),
+                  'Height': int(height / binning),
+                  'FrameType': 'Light',
+                  'Speed': speed,
+                  'Path': imagePath,
+                  }
 
-        self.setSGProProperty('startexposure', Duration=expTime, Light=True)
-        self.waitExposed(self.getSGProProperty, 'imageready', expTime)
-        data = self.retrieveFits(self.getSGProProperty, 'imagearray')
-        imagePath = self.saveFits(imagePath, data, expTime, binning, focalLength)
+        suc, response = self.sgCaptureImage(params=params)
+        if not suc:
+            return False
+        receipt = response.get('Receipt', '')
+        if not receipt:
+            return False
+        self.waitCombined(self.sgGetImagePath, receipt, expTime)
+        if not self.abortExpose:
+            pre, ext = os.path.splitext(imagePath)
+            os.rename(pre + '.fit', imagePath)
+        else:
+            imagePath = ''
         self.signals.saved.emit(imagePath)
         self.signals.exposeReady.emit()
         self.signals.message.emit('')
-
         return True
 
     def expose(self,
@@ -150,13 +247,8 @@ class CameraSGPro(SGProClass, CameraSupport):
         if not self.deviceConnected:
             return False
 
+        self.sgAbortImage()
         self.abortExpose = True
-        canAbort = self.data.get('CAN_ABORT', False)
-
-        if not canAbort:
-            return False
-
-        self.client.stopexposure()
         return True
 
     def sendCoolerSwitch(self, coolerOn=False):
@@ -166,8 +258,6 @@ class CameraSGPro(SGProClass, CameraSupport):
         """
         if not self.deviceConnected:
             return False
-
-        self.client.cooleron(CoolerOn=coolerOn)
         return True
 
     def sendCoolerTemp(self, temperature=0):
@@ -178,5 +268,23 @@ class CameraSGPro(SGProClass, CameraSupport):
         if not self.deviceConnected:
             return False
 
-        self.client.setccdtemperature(SetCCDTemperature=temperature)
+        self.sgSetCameraTemp(temperature=temperature)
+        return True
+
+    def sendOffset(self, offset=0):
+        """
+        :param offset:
+        :return: success
+        """
+        if not self.deviceConnected:
+            return False
+        return True
+
+    def sendGain(self, gain=0):
+        """
+        :param gain:
+        :return: success
+        """
+        if not self.deviceConnected:
+            return False
         return True

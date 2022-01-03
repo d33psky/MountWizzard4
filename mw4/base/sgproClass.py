@@ -17,45 +17,42 @@
 ###########################################################
 # standard libraries
 import logging
-import uuid
+import json
 
 # external packages
-from PyQt5.QtCore import QTimer
-from PyQt5.QtTest import QTest
+from PyQt5.QtCore import QTimer, QObject
 import requests
 
 # local imports
 from base.driverDataClass import DriverData
+from base.driverDataClass import RemoteDeviceShutdown
 from base.tpool import Worker
 
 
-class SGProClass(DriverData):
+class SGProClass(DriverData, QObject):
     """
     """
     log = logging.getLogger(__name__)
 
-    CYCLE_POLL_STATUS = 1000
+    CYCLE_POLL_STATUS = 500
     CYCLE_POLL_DATA = 1000
-    SGPRO_TIMEOUT = 3
+    SGPRO_TIMEOUT = 0.5
+    HOST_ADDR = '127.0.0.1'
+    PORT = 59590
+    PROTOCOL = 'http'
+    BASE_URL = f'{PROTOCOL}://{HOST_ADDR}:{PORT}'
 
     def __init__(self, app=None, data=None, threadPool=None):
         super().__init__()
         self.app = app
         self.threadPool = threadPool
         self.data = data
-
-        self._host = ('127.0.0.1', 59590)
-        self._hostaddress = '127.0.0.1'
         self._deviceName = ''
-        self.deviceType = ''
-
         self.defaultConfig = {
-            'sgpro': {
-                'deviceName': '',
-                'deviceList': [],
-                'hostaddress': 'localhost',
-            }
+            'deviceList': ['Remote defined'],
+            'deviceName': 'Remote defined',
         }
+        self.signalRS = RemoteDeviceShutdown()
 
         self.deviceConnected = False
         self.serverConnected = False
@@ -67,23 +64,7 @@ class SGProClass(DriverData):
         self.cycleData = QTimer()
         self.cycleData.setSingleShot(False)
         self.cycleData.timeout.connect(self.pollData)
-
-    @property
-    def host(self):
-        return self._host
-
-    @host.setter
-    def host(self, value):
-        self._host = value
-
-    @property
-    def hostaddress(self):
-        return self._hostaddress
-
-    @hostaddress.setter
-    def hostaddress(self, value):
-        self._hostaddress = value
-        self._host = (self._hostaddress, self._port)
+        self.signalRS.signalRemoteShutdown.connect(self.stopCommunication)
 
     @property
     def deviceName(self):
@@ -93,137 +74,86 @@ class SGProClass(DriverData):
     def deviceName(self, value):
         self._deviceName = value
 
-    def generateBaseUrl(self):
-        """
-        :return: value for base url
-        """
-        val = '{0}://{1}:{2}/api/v{3}/{4}/{5}'.format(
-            self.protocol,
-            self.host[0],
-            self.host[1],
-            self.apiVersion,
-            self.deviceType,
-            self.number,
-        )
-        return val
-
-    def getSGProProperty(self, valueProp, **data):
+    def requestProperty(self, valueProp, params=None):
         """
         :param valueProp:
-        :param data:
+        :param params:
         :return:
         """
-        if not self.deviceName:
-            return None
-        if valueProp in self.propertyExceptions:
-            return None
-
-        uid = uuid.uuid4().int % 2**32
-        data['ClientTransactionID'] = uid
-
-        t = f'[{self.deviceName}] [{uid:10d}], get [{valueProp}], data:[{data}]'
-        self.log.trace(t)
-
         try:
-            response = requests.get(f'{self.baseUrl}/{valueProp}',
-                                    params=data, timeout=self.SGPRO_TIMEOUT)
+            t = f'SGPro: [{self.BASE_URL}/{valueProp}?format=json]'
+            if params is not None:
+                t += f' data: [{bytes(json.dumps(params).encode("utf-8"))}]'
+                self.log.trace('POST ' + t)
+                response = requests.post(f'{self.BASE_URL}/{valueProp}?format=json',
+                                         data=bytes(json.dumps(params).encode('utf-8')),
+                                         timeout=self.SGPRO_TIMEOUT)
+            else:
+                self.log.trace('GET  ' + t)
+                response = requests.get(f'{self.BASE_URL}/{valueProp}?format=json',
+                                        timeout=self.SGPRO_TIMEOUT)
         except requests.exceptions.Timeout:
-            t = f'[{self.deviceName}] [{uid:10d}] has timeout'
-            self.log.debug(t)
+            self.log.debug('Request SGPro connection error')
             return None
         except requests.exceptions.ConnectionError:
-            t = f'[{self.deviceName}] [{uid:10d}] has connection error'
-            self.log.warning(t)
+            self.log.error('Request SGPro connection error')
             return None
         except Exception as e:
-            t = f'[{self.deviceName}] [{uid:10d}] has exception: [{e}]'
-            self.log.error(t)
+            self.log.error(f'Request SGPro error: [{e}]')
             return None
 
-        if response.status_code == 400 or response.status_code == 500:
-            t = f'[{self.deviceName}] [{uid:10d}], stat 400/500, [{response.text}]'
+        if response.status_code != 200:
+            t = f'Request SGPro response invalid: [{response.status_code}]'
             self.log.warning(t)
             return None
 
+        self.log.trace(f'Request SGpro response: [{response.json()}]')
         response = response.json()
-        if response['ErrorNumber'] != 0:
-            t = f'[{self.deviceName}] [{uid:10d}], response: [{response}]'
-            self.log.warning(t)
-            self.propertyExceptions.append(valueProp)
-            return None
-
-        if valueProp != 'imagearray':
-            t = f'[{self.deviceName}] [{uid:10d}], response: [{response}]'
-            self.log.trace(t)
-
-        return response['Value']
-
-    def setSGProProperty(self, valueProp, **data):
-        """
-        :param valueProp:
-        :param data:
-        :return:
-        """
-        if not self.deviceName:
-            return None
-        if valueProp in self.propertyExceptions:
-            return None
-
-        uid = uuid.uuid4().int % 2**32
-        t = f'[{self.deviceName}] [{uid:10d}], set [{valueProp}] to: [{data}]'
-        self.log.trace(t)
-
-        try:
-            response = requests.put(f'{self.baseUrl}/{valueProp}',
-                                    data=data, timeout=self.SGPRO_TIMEOUT)
-        except requests.exceptions.Timeout:
-            t = f'[{self.deviceName}] [{uid:10d}] has timeout'
-            self.log.debug(t)
-            return None
-        except requests.exceptions.ConnectionError:
-            t = f'[{self.deviceName}] [{uid:10d}] has connection error'
-            self.log.warning(t)
-            return None
-        except Exception as e:
-            t = f'[{self.deviceName}] [{uid:10d}] has exception: [{e}]'
-            self.log.error(t)
-            return None
-
-        if response.status_code == 400 or response.status_code == 500:
-            t = f'[{self.deviceName}] [{uid:10d}], stat 400/500, [{response.text}]'
-            self.log.warning(t)
-            return None
-
-        response = response.json()
-        if response['ErrorNumber'] != 0:
-            t = f'[{self.deviceName}] [{uid:10d}], response: [{response}]'
-            self.log.warning(t)
-            self.propertyExceptions.append(valueProp)
-            return None
-
-        t = f'[{self.deviceName}] [{uid:10d}], response: [{response}]'
-        self.log.trace(t)
         return response
 
-    def getAndStoreSGProProperty(self, valueProp, element, elementInv=None):
+    def sgConnectDevice(self):
         """
-        :param valueProp:
-        :param element:
-        :param elementInv:
-        :return: reset entry
+        :return:
         """
-        value = self.getSGProProperty(valueProp)
-        self.storePropertyToData(value, element, elementInv)
-        return True
+        devName = self.deviceName.replace(' ', '%20')
+        prop = f'connectdevice/{self.DEVICE_TYPE}/{devName}'
+        response = self.requestProperty(prop)
+        if response is None:
+            return False
+
+        return response['Success']
+
+    def sgDisconnectDevice(self):
+        """
+        :return:
+        """
+        prop = f'disconnectdevice/{self.DEVICE_TYPE}'
+        response = self.requestProperty(prop)
+        if response is None:
+            return False
+
+        return response['Success']
+
+    def sgEnumerateDevice(self):
+        """
+        :return:
+        """
+        prop = f'enumdevices/{self.DEVICE_TYPE}'
+        response = self.requestProperty(prop)
+        if response is None:
+            return []
+
+        return response['Devices']
 
     def workerConnectDevice(self):
         """
         :return: success of reconnecting to server
         """
-        for retry in range(0, 10):
-            self.setSGProProperty('connected', Connected=True)
-            suc = self.getSGProProperty('connected')
+        if self.deviceName == 'Remote defined':
+            return True
 
+        for retry in range(0, 3):
+            suc = self.sgConnectDevice()
             if suc:
                 t = f'[{self.deviceName}] connected, [{retry}] retries'
                 self.log.debug(t)
@@ -231,22 +161,16 @@ class SGProClass(DriverData):
             else:
                 t = f' [{self.deviceName}] Connection retry: [{retry}]'
                 self.log.info(t)
-                QTest.qWait(250)
+
+        if suc:
+            t = f'[{self.deviceName}] connected'
+            self.log.debug(t)
 
         if not suc:
-            self.app.message.emit(f'SGPRO connect error:[{self.deviceName}]', 2)
+            self.app.message.emit(f'SGPro connect error: [{self.deviceName}]', 2)
             self.deviceConnected = False
             self.serverConnected = False
             return False
-
-        if not self.serverConnected:
-            self.serverConnected = True
-            self.signals.serverConnected.emit()
-
-        if not self.deviceConnected:
-            self.deviceConnected = True
-            self.signals.deviceConnected.emit(f'{self.deviceName}')
-            self.app.message.emit(f'SGPRO device found: [{self.deviceName}]', 0)
 
         return True
 
@@ -266,32 +190,6 @@ class SGProClass(DriverData):
         self.cycleDevice.stop()
         return True
 
-    def workerGetInitialConfig(self):
-        """
-        :return:
-        """
-        self.data['DRIVER_INFO.DRIVER_NAME'] = self.getSGProProperty('name')
-        self.data['DRIVER_INFO.DRIVER_VERSION'] = self.getSGProProperty('driverversion')
-        self.data['DRIVER_INFO.DRIVER_EXEC'] = self.getSGProProperty('driverinfo')
-        return True
-
-    def workerPollStatus(self):
-        """
-        :return: success
-        """
-        suc = self.getSGProProperty('connected')
-        if self.deviceConnected and not suc:
-            self.deviceConnected = False
-            self.signals.deviceDisconnected.emit(f'{self.deviceName}')
-            self.app.message.emit(f'SGPRO device remove:[{self.deviceName}]', 0)
-
-        elif not self.deviceConnected and suc:
-            self.deviceConnected = True
-            self.signals.deviceConnected.emit(f'{self.deviceName}')
-            self.app.message.emit(f'SGPRO device found: [{self.deviceName}]', 0)
-
-        return suc
-
     def processPolledData(self):
         pass
 
@@ -309,15 +207,8 @@ class SGProClass(DriverData):
         self.threadPool.start(worker)
         return True
 
-    def pollStatus(self):
-        """
-        :return: success
-        """
-        if not self.deviceConnected:
-            return False
-        worker = Worker(self.workerPollStatus)
-        self.threadPool.start(worker)
-        return True
+    def workerGetInitialConfig(self):
+        pass
 
     def getInitialConfig(self):
         """
@@ -329,14 +220,53 @@ class SGProClass(DriverData):
         self.threadPool.start(worker)
         return True
 
+    def workerPollStatus(self):
+        """
+        :return: success
+        """
+        prop = f'devicestatus/{self.DEVICE_TYPE}'
+        response = self.requestProperty(prop)
+
+        if response is None:
+            return False
+
+        self.storePropertyToData(response['State'], 'Device.Status')
+        self.storePropertyToData(response['Message'], 'Device.Message')
+
+        if response['State'] == 'DISCONNECTED':
+            if self.deviceConnected:
+                self.deviceConnected = False
+                self.signals.deviceDisconnected.emit(f'{self.deviceName}')
+                self.app.message.emit(f'SGPro device remove: [{self.deviceName}]', 0)
+
+        else:
+            if not self.deviceConnected:
+                self.deviceConnected = True
+                self.signals.deviceConnected.emit(f'{self.deviceName}')
+                self.app.message.emit(f'SGPro device found:  [{self.deviceName}]', 0)
+
+        return True
+
+    def pollStatus(self):
+        """
+        :return: success
+        """
+        worker = Worker(self.workerPollStatus)
+        self.threadPool.start(worker)
+        return True
+
     def startCommunication(self, loadConfig=False):
         """
-        :param loadConfig:
+        :param: loadConfig:
         :return: True for test purpose
         """
+        if not self.serverConnected:
+            self.serverConnected = True
+            self.signals.serverConnected.emit()
+
         worker = Worker(self.workerConnectDevice)
-        worker.signals.finished.connect(self.getInitialConfig)
-        worker.signals.finished.connect(self.startTimer)
+        worker.signals.result.connect(self.getInitialConfig)
+        worker.signals.result.connect(self.startTimer)
         self.threadPool.start(worker)
         return True
 
@@ -345,10 +275,18 @@ class SGProClass(DriverData):
         :return: true for test purpose
         """
         self.stopTimer()
-        self.setSGProProperty('connected', Connected=False)
+        if self.deviceName != 'Remote defined':
+            self.sgDisconnectDevice()
         self.deviceConnected = False
         self.serverConnected = False
         self.signals.deviceDisconnected.emit(f'{self.deviceName}')
         self.signals.serverDisconnected.emit({f'{self.deviceName}': 0})
-        self.app.message.emit(f'SGPRO device remove:[{self.deviceName}]', 0)
+        self.app.message.emit(f'SGPro device remove: [{self.deviceName}]', 0)
         return True
+
+    def discoverDevices(self):
+        """
+        :return: device list
+        """
+        discoverList = self.sgEnumerateDevice()
+        return discoverList
