@@ -55,6 +55,12 @@ basic API is sufficient to do the modeling job.
           information, especially the focal length, the pixel size. Otherwise
           plate solving will fail.
 
+for N.I.N.A. please set the server to on to be able to connect to.
+
+.. image:: image/server_setting_nina.png
+    :align: center
+    :scale: 71%
+
 Basically MW4 interface these apps in two different modes:
 
 - App controlled mode
