@@ -19,7 +19,6 @@
 import os
 import logging
 import datetime
-import inspect
 
 # external packages
 from PyQt5.QtWidgets import QWidget, QDesktopWidget, QFileDialog, QMessageBox
@@ -31,8 +30,7 @@ from PyQt5.QtTest import QTest
 import numpy as np
 from qimage2ndarray import rgb_view, array2qimage
 
-# local imports
-import gui
+
 from gui.utilities.stylesQtCss import Styles
 from gui.utilities.toolsMatplotlib import ToolsMatplotlib
 from mountcontrol.convert import formatHstrToText, formatDstrToText
